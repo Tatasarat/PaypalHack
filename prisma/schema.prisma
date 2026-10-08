@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String              @id @default(cuid())
+  email       String?             @unique
+  displayName String
+  isDemo      Boolean             @default(false)
+  createdAt   DateTime            @default(now())
+  credentials PasskeyCredential[]
+  contacts    Contact[]
+  actions     Action[]
+  payments    Payment[]
+}
+
+model PasskeyCredential {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  credentialId String    @unique
+  publicKey    String
+  counter      Int       @default(0)
+  transports   String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+}
+
+model Action {
+  id         String       @id @default(cuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toolName   String
+  args       Json
+  status     String       @default("PENDING")
+  decidedBy  String?
+  result     Json?
+  error      String?
+  createdAt  DateTime     @default(now())
+  decidedAt  DateTime?
+  executedAt DateTime?
+  events     AuditEvent[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  actionId  String
+  action    Action   @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  type      String
+  detail    Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Contact {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  email     String
+  createdAt DateTime     @default(now())
+  rule      AutopayRule?
+  payments  Payment[]
+
+  @@index([userId])
+}
+
+model AutopayRule {
+  id                 String   @id @default(cuid())
+  contactId          String   @unique
+  contact            Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  maxPerPaymentCents Int
+  monthlyCapCents    Int
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actionId      String?
+  contactId     String
+  contact       Contact  @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  amountCents   Int
+  currency      String   @default("USD")
+  note          String?
+  status        String
+  paypalBatchId String?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
