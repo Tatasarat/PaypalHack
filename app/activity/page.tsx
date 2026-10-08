@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import LedgerGrid from '@/components/LedgerGrid';
 import { prisma } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 
@@ -7,6 +8,7 @@ export const dynamic = 'force-dynamic';
 
 const EVENT_STYLES: Record<string, { label: string; dot: string }> = {
   PROPOSED: { label: 'Proposed by the agent', dot: 'bg-amber-400' },
+  VERIFIED: { label: 'Identity confirmed', dot: 'bg-teal-500' },
   APPROVED: { label: 'Approved by you', dot: 'bg-blue-500' },
   AUTO_APPROVED: { label: 'Approved automatically by your autopay rule', dot: 'bg-purple-500' },
   REJECTED: { label: 'Rejected by you', dot: 'bg-slate-400' },
@@ -65,7 +67,7 @@ export default async function ActivityPage() {
             P
           </div>
           <div className="text-sm font-semibold">
-            Activity log{user.isDemo ? ' · demo' : ''}
+            Activity &amp; ledger{user.isDemo ? ' · demo' : ''}
           </div>
         </div>
         <Link
@@ -76,7 +78,7 @@ export default async function ActivityPage() {
         </Link>
       </header>
 
-      <main className="mx-auto w-full max-w-3xl px-4 py-6">
+      <main className="mx-auto w-full max-w-6xl px-4 py-6">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           {stats.map((s) => (
             <div key={s.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -86,14 +88,19 @@ export default async function ActivityPage() {
           ))}
         </div>
 
-        <h2 className="mb-3 mt-8 text-sm font-semibold text-slate-600">Every action the agent proposed</h2>
+        <h2 className="mb-3 mt-8 text-sm font-semibold text-slate-600">Data explorer</h2>
+        <LedgerGrid />
+
+        <h2 className="mb-3 mt-8 text-sm font-semibold text-slate-600">
+          Audit trail: every action the agent proposed
+        </h2>
 
         {events.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
             Nothing yet. Ask the agent to create an invoice or send a payment and it will show up here.
           </div>
         ) : (
-          <ul className="space-y-3">
+          <ul className="mx-auto max-w-3xl space-y-3">
             {events.map((event) => {
               const style = EVENT_STYLES[event.type] ?? { label: event.type, dot: 'bg-slate-300' };
               const detail = event.detail as { message?: string; reason?: string } | null;
