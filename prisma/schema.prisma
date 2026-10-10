@@ -8,15 +8,16 @@ datasource db {
 }
 
 model User {
-  id          String              @id @default(cuid())
-  email       String?             @unique
-  displayName String
-  isDemo      Boolean             @default(false)
-  createdAt   DateTime            @default(now())
-  credentials PasskeyCredential[]
-  contacts    Contact[]
-  actions     Action[]
-  payments    Payment[]
+  id              String              @id @default(cuid())
+  email           String?             @unique
+  displayName     String
+  isDemo          Boolean             @default(false)
+  createdAt       DateTime            @default(now())
+  credentials     PasskeyCredential[]
+  contacts        Contact[]
+  actions         Action[]
+  payments        Payment[]
+  paymentRequests PaymentRequest[]
 }
 
 model PasskeyCredential {
@@ -62,14 +63,15 @@ model AuditEvent {
 }
 
 model Contact {
-  id        String       @id @default(cuid())
-  userId    String
-  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name      String
-  email     String
-  createdAt DateTime     @default(now())
-  rule      AutopayRule?
-  payments  Payment[]
+  id              String           @id @default(cuid())
+  userId          String
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String
+  email           String
+  createdAt       DateTime         @default(now())
+  rule            AutopayRule?
+  payments        Payment[]
+  paymentRequests PaymentRequest[]
 
   @@index([userId])
 }
@@ -97,6 +99,25 @@ model Payment {
   status        String
   paypalBatchId String?
   createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model PaymentRequest {
+  id            String    @id @default(cuid())
+  token         String    @unique
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactId     String
+  contact       Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  amountCents   Int
+  currency      String    @default("USD")
+  note          String?
+  status        String    @default("OPEN")
+  paypalOrderId String?
+  createdAt     DateTime  @default(now())
+  expiresAt     DateTime
+  paidAt        DateTime?
 
   @@index([userId, createdAt])
 }
