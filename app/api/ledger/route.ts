@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getSessionUser, unauthorized } from '@/lib/auth';
 import { monthToDateCents } from '@/lib/payments';
+import { payLink } from '@/lib/requests';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,10 +21,12 @@ function summarizeAction(toolName: string, args: unknown): string {
   const rec = asRecord(args);
   if (!rec) return '';
 
-  if (toolName === 'send_payment') {
+  if (toolName === 'send_payment' || toolName === 'request_payment') {
     const name = typeof rec.contactName === 'string' ? rec.contactName : '';
     const cents = typeof rec.amountCents === 'number' ? rec.amountCents : NaN;
-    return name && Number.isFinite(cents) ? `$${(cents / 100).toFixed(2)} to ${name}` : '';
+    if (!name || !Number.isFinite(cents)) return '';
+    const amount = `$${(cents / 100).toFixed(2)}`;
+    return toolName === 'send_payment' ? `${amount} to ${name}` : `${amount} from ${name}`;
   }
 
   const items = Array.isArray(rec.items) ? rec.items : [];
@@ -66,6 +69,33 @@ export async function GET(req: NextRequest) {
           note: p.note ?? '',
           batchId: p.paypalBatchId ?? '',
         })),
+      });
+    }
+
+    if (view === 'requests') {
+      const requests = await prisma.paymentRequest.findMany({
+        where: { userId: user.id },
+        include: { contact: { select: { name: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      });
+
+      const now = Date.now();
+      return NextResponse.json({
+        rows: requests.map((r) => {
+          const expired = r.status === 'OPEN' && r.expiresAt.getTime() < now;
+          const status = expired ? 'EXPIRED' : r.status;
+          return {
+            id: r.id,
+            createdAt: r.createdAt.toISOString(),
+            contactName: r.contact.name,
+            amount: r.amountCents / 100,
+            status,
+            note: r.note ?? '',
+            paidAt: r.paidAt ? r.paidAt.toISOString() : '',
+            link: status === 'OPEN' ? payLink(r.token) : '',
+          };
+        }),
       });
     }
 

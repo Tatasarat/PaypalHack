@@ -12,6 +12,7 @@ import {
   type NormalizedPayment,
   type SendPaymentArgs,
 } from '@/lib/payments';
+import { createPaymentRequest, listPaymentRequests } from '@/lib/requests';
 
 export type PendingAction = {
   id: string;
@@ -25,6 +26,7 @@ export type AutoAction = {
   toolName: string;
   summary: string;
   ok: boolean;
+  link?: string;
 };
 
 export type AgentCollector = {
@@ -56,18 +58,36 @@ const paypalToolkit = new PayPalAgentToolkit({
 
 const toolkitTools = paypalToolkit.getTools() as unknown as Record<string, AnyTool>;
 
-// Our own tool. The model only describes the payment; the real work and all
-// safety checks happen in lib/payments.ts after the approval layer.
+// Our own tools. The model only describes what it wants; the real work and all
+// safety checks happen in our server code, never in the model.
 const customTools: Record<string, AnyTool> = {
   send_payment: tool({
     description:
-      'Send money in US dollars to one of the user\'s saved contacts via PayPal. Use the contact name exactly as the user said it. Never ask for or invent an email address.',
+      "Send money in US dollars FROM the user TO one of the user's saved contacts via PayPal. Use the contact name exactly as the user said it. Never ask for or invent an email address.",
     parameters: z.object({
       contactName: z.string().describe('Name of a saved contact'),
       amount: z.number().positive().describe('Amount in US dollars'),
       note: z.string().max(200).optional().describe('Short note for the recipient'),
     }),
     execute: async () => ({ error: 'send_payment must go through the approval layer.' }),
+  }) as unknown as AnyTool,
+
+  request_payment: tool({
+    description:
+      "Ask one of the user's saved contacts to pay the user a US dollar amount. This creates a shareable PayPal pay link; it asks for money and does not send any. Use the contact name exactly as the user said it.",
+    parameters: z.object({
+      contactName: z.string().describe('Name of a saved contact'),
+      amount: z.number().positive().describe('Amount in US dollars'),
+      note: z.string().max(200).optional().describe('What the payment is for'),
+    }),
+    execute: async () => ({ error: 'request_payment is handled by the server.' }),
+  }) as unknown as AnyTool,
+
+  list_payment_requests: tool({
+    description:
+      "List the user's recent payment requests and whether each one has been paid, is still open, or has expired.",
+    parameters: z.object({}),
+    execute: async () => ({ error: 'list_payment_requests is handled by the server.' }),
   }) as unknown as AnyTool,
 };
 
@@ -256,10 +276,73 @@ async function proposeSendPayment(rawArgs: unknown, collector: AgentCollector, a
   return { status: 'failed', error: outcome.error, note: 'Nothing was sent. Explain the error.' };
 }
 
+// Asking for money cannot move money out, so it needs no approval. It is still logged.
+async function runRequestPayment(rawArgs: unknown, collector: AgentCollector, actor: Actor) {
+  const args = rawArgs as { contactName?: unknown; amount?: unknown; note?: unknown };
+
+  const created = await createPaymentRequest(actor, {
+    contactName: String(args.contactName ?? ''),
+    amount: Number(args.amount),
+    note: args.note ? String(args.note) : undefined,
+  });
+
+  if (!created.ok) {
+    return {
+      status: 'blocked',
+      reason: created.reason,
+      note: 'No request was created. Explain the reason to the user.',
+    };
+  }
+
+  const row = await prisma.action.create({
+    data: {
+      userId: actor.id,
+      toolName: 'request_payment',
+      args: toJson({
+        contactName: created.contactName,
+        amountCents: created.amountCents,
+        note: created.note,
+      }),
+      status: 'EXECUTED',
+      decidedBy: 'auto',
+      decidedAt: new Date(),
+      executedAt: new Date(),
+      result: toJson({ link: created.link }),
+    },
+  });
+  await logEvent(row.id, 'PROPOSED');
+  await logEvent(row.id, 'EXECUTED', {
+    reason: 'Requesting money cannot move money out, so no approval was needed.',
+  });
+
+  const summary = `Payment request created: $${dollars(created.amountCents)} from ${created.contactName}`;
+  collector.auto.push({
+    id: row.id,
+    toolName: 'request_payment',
+    summary,
+    ok: true,
+    link: created.link,
+  });
+
+  return {
+    status: 'request_created',
+    summary,
+    note: 'Tell the user the request is ready and that they can copy the link from the card below to share it. Do not say the contact has paid.',
+  };
+}
+
 export function buildAgentTools(collector: AgentCollector, actor: Actor): AgentTools {
   const wrapped: Record<string, AnyTool> = {};
 
   for (const [name, original] of Object.entries(allTools)) {
+    if (name === 'list_payment_requests') {
+      wrapped[name] = {
+        ...original,
+        execute: async () => ({ requests: await listPaymentRequests(actor.id) }),
+      };
+      continue;
+    }
+
     if (isReadOnly(name)) {
       wrapped[name] = actor.isDemo
         ? { ...original, execute: async () => demoReadResult(name) }
@@ -269,10 +352,11 @@ export function buildAgentTools(collector: AgentCollector, actor: Actor): AgentT
 
     wrapped[name] = {
       ...original,
-      execute: async (args: unknown) =>
-        name === 'send_payment'
-          ? proposeSendPayment(args, collector, actor)
-          : proposeGeneric(name, args, collector, actor),
+      execute: async (args: unknown) => {
+        if (name === 'send_payment') return proposeSendPayment(args, collector, actor);
+        if (name === 'request_payment') return runRequestPayment(args, collector, actor);
+        return proposeGeneric(name, args, collector, actor);
+      },
     };
   }
 

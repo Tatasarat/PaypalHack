@@ -1,5 +1,7 @@
+import { randomBytes } from 'crypto';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
+import { payLink } from '@/lib/requests';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60 * 1000);
 
@@ -150,6 +152,61 @@ export async function createDemoUser() {
       },
     },
   });
+
+  // 4) Payment requests: one already paid, one still open.
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  const seedRequest = async (
+    contact: { id: string; name: string },
+    amountCents: number,
+    note: string,
+    status: 'PAID' | 'OPEN',
+    createdMinutesAgo: number,
+    paidMinutesAgo?: number
+  ) => {
+    const token = randomBytes(16).toString('base64url');
+
+    await prisma.paymentRequest.create({
+      data: {
+        token,
+        userId: user.id,
+        contactId: contact.id,
+        amountCents,
+        note,
+        status,
+        createdAt: minutesAgo(createdMinutesAgo),
+        expiresAt,
+        paidAt: paidMinutesAgo !== undefined ? minutesAgo(paidMinutesAgo) : null,
+      },
+    });
+
+    await prisma.action.create({
+      data: {
+        userId: user.id,
+        toolName: 'request_payment',
+        args: { contactName: contact.name, amountCents, note } as Prisma.InputJsonValue,
+        status: 'EXECUTED',
+        decidedBy: 'auto',
+        result: { link: payLink(token) },
+        createdAt: minutesAgo(createdMinutesAgo),
+        decidedAt: minutesAgo(createdMinutesAgo),
+        executedAt: minutesAgo(createdMinutesAgo),
+        events: {
+          create: [
+            { type: 'PROPOSED', createdAt: minutesAgo(createdMinutesAgo) },
+            {
+              type: 'EXECUTED',
+              detail: { reason: 'Requesting money cannot move money out, so no approval was needed.' },
+              createdAt: minutesAgo(createdMinutesAgo - 1),
+            },
+          ],
+        },
+      },
+    });
+  };
+
+  await seedRequest(ravi, 4500, 'Website maintenance', 'PAID', 90, 30);
+  await seedRequest(priya, 2000, 'Logo revisions', 'OPEN', 20);
 
   return user;
 }

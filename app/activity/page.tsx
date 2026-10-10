@@ -6,7 +6,9 @@ import { getSessionUser } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
-const EVENT_STYLES: Record<string, { label: string; dot: string }> = {
+type Style = { label: string; dot: string };
+
+const EVENT_STYLES: Record<string, Style> = {
   PROPOSED: { label: 'Proposed by the agent', dot: 'bg-amber-400' },
   VERIFIED: { label: 'Identity confirmed', dot: 'bg-teal-500' },
   APPROVED: { label: 'Approved by you', dot: 'bg-blue-500' },
@@ -17,16 +19,28 @@ const EVENT_STYLES: Record<string, { label: string; dot: string }> = {
   EXPIRED: { label: 'Expired', dot: 'bg-slate-300' },
 };
 
+// Asking for money works differently from the other actions, so it gets its own wording.
+const REQUEST_STYLES: Record<string, Style> = {
+  PROPOSED: { label: 'Payment request started by the agent', dot: 'bg-amber-400' },
+  EXECUTED: { label: 'Payment request created', dot: 'bg-sky-500' },
+};
+
+function styleFor(type: string, toolName: string): Style {
+  if (toolName === 'request_payment' && REQUEST_STYLES[type]) return REQUEST_STYLES[type];
+  return EVENT_STYLES[type] ?? { label: type, dot: 'bg-slate-300' };
+}
+
 function humanize(toolName: string): string {
   return toolName.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 }
 
 function describe(toolName: string, args: unknown): string | null {
-  if (toolName !== 'send_payment') return null;
+  if (toolName !== 'send_payment' && toolName !== 'request_payment') return null;
   if (!args || typeof args !== 'object') return null;
   const a = args as { contactName?: unknown; amountCents?: unknown };
   if (typeof a.contactName !== 'string' || typeof a.amountCents !== 'number') return null;
-  return `$${(a.amountCents / 100).toFixed(2)} to ${a.contactName}`;
+  const amount = `$${(a.amountCents / 100).toFixed(2)}`;
+  return toolName === 'send_payment' ? `${amount} to ${a.contactName}` : `${amount} from ${a.contactName}`;
 }
 
 export default async function ActivityPage() {
@@ -97,12 +111,12 @@ export default async function ActivityPage() {
 
         {events.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
-            Nothing yet. Ask the agent to create an invoice or send a payment and it will show up here.
+            Nothing yet. Ask the agent to create an invoice, send a payment, or request one, and it will show up here.
           </div>
         ) : (
           <ul className="mx-auto max-w-3xl space-y-3">
             {events.map((event) => {
-              const style = EVENT_STYLES[event.type] ?? { label: event.type, dot: 'bg-slate-300' };
+              const style = styleFor(event.type, event.action.toolName);
               const detail = event.detail as { message?: string; reason?: string } | null;
               const summary = describe(event.action.toolName, event.action.args);
               return (

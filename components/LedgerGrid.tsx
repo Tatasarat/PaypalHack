@@ -13,11 +13,12 @@ import {
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
-type View = 'payments' | 'actions' | 'contacts';
+type View = 'payments' | 'requests' | 'actions' | 'contacts';
 type Row = Record<string, unknown>;
 
 const TABS: { id: View; label: string }[] = [
-  { id: 'payments', label: '💸 Payments' },
+  { id: 'payments', label: '💸 Payments sent' },
+  { id: 'requests', label: '🔗 Requests' },
   { id: 'actions', label: '🤖 Agent actions' },
   { id: 'contacts', label: '👥 Contacts' },
 ];
@@ -31,6 +32,8 @@ const theme = themeQuartz.withParams({
 const STATUS_STYLES: Record<string, string> = {
   EXECUTED: 'bg-green-100 text-green-800',
   SENT: 'bg-green-100 text-green-800',
+  PAID: 'bg-green-100 text-green-800',
+  OPEN: 'bg-sky-100 text-sky-800',
   SIMULATED: 'bg-purple-100 text-purple-800',
   PENDING: 'bg-amber-100 text-amber-800',
   APPROVED: 'bg-blue-100 text-blue-800',
@@ -49,6 +52,30 @@ function StatusCell(params: ICellRendererParams) {
     >
       {value}
     </span>
+  );
+}
+
+function LinkCell(params: ICellRendererParams) {
+  const [copied, setCopied] = useState(false);
+  const link = String(params.value ?? '');
+
+  if (!link) return <span className="text-slate-400">–</span>;
+
+  return (
+    <button
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(link);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          // Clipboard can be blocked by the browser; nothing else to do here.
+        }
+      }}
+      className="rounded-md border border-slate-300 px-2 py-0.5 text-xs font-medium text-[#003087] hover:bg-slate-100"
+    >
+      {copied ? 'Copied ✓' : 'Copy link'}
+    </button>
   );
 }
 
@@ -72,13 +99,13 @@ const dateComparator = (filterDate: Date, cellValue: Date) => {
   return cell < filter ? -1 : cell > filter ? 1 : 0;
 };
 
-const dateColumn = (headerName: string): ColDef => ({
-  field: 'createdAt',
+const dateColumn = (headerName: string, field = 'createdAt', sort = true): ColDef => ({
+  field,
   headerName,
   valueFormatter: dateFormatter,
   filter: 'agDateColumnFilter',
   filterParams: { comparator: dateComparator },
-  sort: 'desc',
+  ...(sort ? { sort: 'desc' as const } : {}),
   minWidth: 180,
 });
 
@@ -97,6 +124,29 @@ const COLUMNS: Record<View, ColDef[]> = {
     { field: 'status', headerName: 'Status', cellRenderer: StatusCell },
     { field: 'note', headerName: 'Note', minWidth: 180 },
     { field: 'batchId', headerName: 'PayPal batch', minWidth: 180 },
+  ],
+  requests: [
+    dateColumn('Requested'),
+    { field: 'contactName', headerName: 'From' },
+    {
+      field: 'amount',
+      headerName: 'Amount',
+      valueFormatter: money,
+      filter: 'agNumberColumnFilter',
+      type: 'numericColumn',
+    },
+    { field: 'status', headerName: 'Status', cellRenderer: StatusCell },
+    { field: 'note', headerName: 'Note', minWidth: 180 },
+    dateColumn('Paid at', 'paidAt', false),
+    {
+      field: 'link',
+      headerName: 'Pay link',
+      cellRenderer: LinkCell,
+      filter: false,
+      sortable: false,
+      floatingFilter: false,
+      minWidth: 140,
+    },
   ],
   actions: [
     dateColumn('Date'),
@@ -131,6 +181,9 @@ const defaultColDef: ColDef = {
 };
 
 type LoadedData = { view: View; rows: Row[]; error: string | null };
+
+const toDate = (value: unknown) =>
+  typeof value === 'string' && value ? new Date(value) : null;
 
 export default function LedgerGrid() {
   const gridRef = useRef<AgGridReact>(null);
@@ -173,25 +226,47 @@ export default function LedgerGrid() {
         ? []
         : data.rows.map((r) => ({
             ...r,
-            createdAt: typeof r.createdAt === 'string' ? new Date(r.createdAt) : r.createdAt,
+            createdAt: toDate(r.createdAt),
+            ...('paidAt' in r ? { paidAt: toDate(r.paidAt) } : {}),
           })),
     [data, loading]
   );
 
   const columnDefs = useMemo(() => COLUMNS[view], [view]);
 
-  const totalSent = useMemo(
-    () =>
-      view === 'payments'
-        ? rowData.reduce((sum, r) => sum + (typeof r.amount === 'number' ? r.amount : 0), 0)
-        : 0,
-    [rowData, view]
-  );
+  const summary = useMemo(() => {
+    if (loading || rowData.length === 0) return null;
+
+    if (view === 'payments') {
+      const total = rowData.reduce((sum, r) => sum + (typeof r.amount === 'number' ? r.amount : 0), 0);
+      return (
+        <>
+          {rowData.length} payment{rowData.length === 1 ? '' : 's'} sent ·{' '}
+          <span className="font-semibold text-slate-900">${total.toFixed(2)}</span> in total
+        </>
+      );
+    }
+
+    if (view === 'requests') {
+      const sum = (status: string) =>
+        rowData
+          .filter((r) => r.status === status)
+          .reduce((s, r) => s + (typeof r.amount === 'number' ? r.amount : 0), 0);
+      return (
+        <>
+          <span className="font-semibold text-green-700">${sum('PAID').toFixed(2)}</span> paid ·{' '}
+          <span className="font-semibold text-sky-700">${sum('OPEN').toFixed(2)}</span> still open
+        </>
+      );
+    }
+
+    return null;
+  }, [rowData, view, loading]);
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex gap-1 rounded-xl bg-slate-100 p-1 text-sm font-medium">
+        <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 text-sm font-medium">
           {TABS.map((tab) => (
             <button
               key={tab.id}
@@ -231,12 +306,7 @@ export default function LedgerGrid() {
         </div>
       </div>
 
-      {view === 'payments' && !loading && rowData.length > 0 && (
-        <div className="mt-3 text-sm text-slate-600">
-          {rowData.length} payment{rowData.length === 1 ? '' : 's'} ·{' '}
-          <span className="font-semibold text-slate-900">${totalSent.toFixed(2)}</span> in total
-        </div>
-      )}
+      {summary && <div className="mt-3 text-sm text-slate-600">{summary}</div>}
 
       <div className="mt-3 h-[480px] w-full">
         {loading ? (
